@@ -1,0 +1,27 @@
+name: 'AI PR Reviewer'
+description: 'Intelligent Polyglot Code Reviews using Google Gemini 2.0'
+author: 'Ronak Rathod'
+branding:
+  icon: 'cpu'
+  color: 'purple'
+
+inputs:
+  GEMINI_API_KEY:
+    description: 'Google Gemini API Key'
+    required: true
+  exclude_files:
+    description: 'Glob patterns to exclude from review (comma separated)'
+    required: false
+    default: '**/*.lock, **/*.min.js, **/*.map, **/node_modules/**, **/*.svg, **/*.png'
+  strictness:
+    description: 'Review strictness level: low, medium, high'
+    required: false
+    default: 'medium'
+  max_file_size:
+    description: 'Maximum characters per file to process'
+    required: false
+    default: '6000'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
