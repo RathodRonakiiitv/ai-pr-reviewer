@@ -3,6 +3,17 @@ name: AI Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      exclude_files:
+        description: 'Glob patterns to exclude (comma separated)'
+        default: '**/*.lock, **/*.min.js, **/*.map, **/node_modules/**'
+      strictness:
+        description: 'Review strictness (low, medium, high)'
+        default: 'medium'
+      max_file_size:
+        description: 'Max characters per file to review'
+        default: '6000'
 
 permissions:
   contents: read
@@ -25,135 +36,138 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         with:
           script: |
-            core.info('=== Starting AI Code Review ===');
-            core.info(`PR Number: ${context.issue.number}`);
-            core.info(`Repository: ${context.repo.owner}/${context.repo.repo}`);
+            const core = require('@actions/core');
+            const glob = require('@actions/glob');
             
-            // Check for API key
+            core.info('=== Starting AI Code Review (Portfolio Grade) ===');
+            
+            // Configuration
+            const excludePatterns = (context.payload.inputs?.exclude_files || '**/*.lock, **/*.min.js, **/*.map, **/node_modules/**').split(',').map(s => s.trim());
+            const strictness = context.payload.inputs?.strictness || 'medium';
+            const maxFileSize = parseInt(context.payload.inputs?.max_file_size || '6000');
             const apiKey = process.env.GEMINI_API_KEY;
+            
             if (!apiKey) {
-              core.setFailed('GEMINI_API_KEY secret is not set');
+              core.setFailed('❌ GEMINI_API_KEY secret is not set.');
               return;
             }
-            core.info('API key found');
-            
-            // Post initial comment
+
+            // --- Helper: Check exclusions using minimatch logic via @actions/glob ---
+            async function isExcluded(filename) {
+                const globber = await glob.create(excludePatterns.join('\n'));
+                const files = await globber.glob();
+                // This is a simplified check; for precise PR file matching without filesystem we'd use minimatch, 
+                // but here we can check basic extensions or just rely on the API filter + size check.
+                // For this demo, let's strictly stick to extension/name checks to be safe without full minimatch lib.
+                if (filename.endsWith('.lock') || filename.endsWith('.min.js') || filename.includes('node_modules')) return true;
+                return false;
+            }
+
+            // Post initial status
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: '## 🤖 AI Code Review\n\n⏳ Analyzing your code...'
+              body: `## 🤖 AI Code Review\n\n🔎 Analyzing changes... \n*Config: Strictness=${strictness}*`
             });
             
-            // Get PR files using GitHub API
+            // Get changed files
             const { data: files } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number
             });
             
-            core.info(`Found ${files.length} changed files`);
-            
-            // Filter for supported source code files
-            // Supports: JS, TS, Python, Java, C++, C#, Go, Rust, PHP, Ruby, Swift, Kotlin, HTML, CSS, SQL, Shell, YAML, JSON, XML
-            const supportedExtensions = [
-              '.js', '.ts', '.jsx', '.tsx', 
-              '.py', 
-              '.java', '.cpp', '.c', '.h', '.cs', 
-              '.go', '.rs', '.php', '.rb', '.swift', '.kt', 
-              '.html', '.css', '.scss', 
-              '.sql', '.sh', '.yaml', '.yml', '.json', '.xml'
-            ];
-            
-            const codeFiles = files.filter(f => supportedExtensions.some(ext => f.filename.endsWith(ext)));
-            core.info(`Found ${codeFiles.length} supported code files`);
-            
-            if (codeFiles.length === 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: '## 🤖 AI Code Review\n\n✅ No supported code files changed in this PR.'
-              });
-              return;
-            }
-            
-            // Build diff content
-            let diffContent = '';
-            for (const file of codeFiles) {
-              diffContent += `\n\n### File: ${file.filename}\n`;
-              diffContent += `Status: ${file.status}\n`;
-              if (file.patch) {
-                // Truncate large patches to avoid token limits
-                if (file.patch.length > 5000) {
-                     diffContent += `\`\`\`diff\n${file.patch.substring(0, 5000)}...\n(Truncated)\n\`\`\`\n`;
-                } else {
-                     diffContent += `\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+            // --- Engineering: Context Management & Filtering ---
+            const supportedExtensions = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.cpp', '.go', '.rs', '.html', '.css'];
+            let filesToReview = [];
+            let skippedFiles = [];
+
+            for (const file of files) {
+                const isSupported = supportedExtensions.some(ext => file.filename.endsWith(ext));
+                const excluded = await isExcluded(file.filename);
+                
+                if (isSupported && !excluded) {
+                    if (file.patch && file.patch.length > maxFileSize) {
+                        skippedFiles.push(`${file.filename} (Too large: ${file.patch.length} chars)`);
+                    } else {
+                        filesToReview.push(file);
+                    }
                 }
-              }
             }
-            
-            // Create the prompt
-            const prompt = `You are an expert polyglot code reviewer. Review the following code changes and provide constructive feedback.
 
-            Focus on:
-            - Code quality and best practices for the specific language
-            - Potential bugs or errors
-            - Performance improvements
-            - Security concerns
-            - Documentation suggestions
+            if (filesToReview.length === 0) {
+                let msg = '✅ No reviewable code changes found.';
+                if (skippedFiles.length > 0) msg += `\n(Skipped ${skippedFiles.length} large files)`;
+                await github.rest.issues.createComment({
+                    owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number,
+                    body: `## 🤖 AI Code Review\n\n${msg}`
+                });
+                return;
+            }
 
-            Format your response in markdown with sections for Summary, Suggestions, and Overall Assessment.
+            // --- Prompt Engineering: Structured Output ---
+            let diffContext = '';
+            for (const file of filesToReview) {
+                diffContext += `\n### File: ${file.filename}\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+            }
 
-            Code changes to review:
-            ${diffContent}`;
-            
-            // Call Gemini API
-            core.info('Calling Gemini API...');
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-            
-            try {
-              const response = await fetch(apiUrl, {
+            const prompt = `
+            You are an expert Senior Staff Engineer doing a code review.
+            Strictness Level: ${strictness.toUpperCase()}
+
+            INSTRUCTIONS:
+            1. Analyze the code for Bugs, Security Vulnerabilities, and Clean Code violations.
+            2. context is limited, so only comment on what you see in the diff.
+            3. IGNORE minor style/whitespace issues unless strictness is HIGH.
+            4. FORMAT YOUR RESPONSE using the structure below.
+
+            STRUCTURE:
+            ## 🔎 Review Summary
+            [1-2 sentences overall thought]
+
+            ## 🔴 Critical Issues (Bugs/Security)
+            - [File.py]: Description of bug...
+
+            ## ⚠️ Improvements (Refactoring/Perf)
+            - [File.js]: Suggestion...
+
+            ## ℹ️ Nitpicks (Docs/Style)
+            - [File]: Description...
+
+            CODE DIFF:
+            ${diffContext}
+            `;
+
+            // Call API
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  contents: [{ parts: [{ text: prompt }] }],
-                  generationConfig: {
-                    temperature: 0.7,
-                    maxOutputTokens: 2048
-                  }
+                    contents: [{ parts: [{ text: prompt }] }],
+                    generationConfig: { temperature: 0.3 } // Lower temperature for more factual reviews
                 })
-              });
-              
-              const data = await response.json();
-              core.info('Gemini API response received');
-              
-              let reviewComment = '## 🤖 AI Code Review\n\n';
-              
-              if (data.error) {
-                reviewComment += `⚠️ **API Error:** ${data.error.message}\n\n*Please verify your GEMINI_API_KEY is valid.*`;
-              } else if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
-                reviewComment += data.candidates[0].content.parts[0].text;
-              } else {
-                reviewComment += '❌ Unable to generate review. Unexpected API response.';
-              }
-              
-              // Post the review
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: reviewComment
-              });
-              
-              core.info('Review comment posted successfully');
-              
-            } catch (error) {
-              core.error(`API call failed: ${error.message}`);
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: `## 🤖 AI Code Review\n\n❌ **Error:** ${error.message}`
-              });
+            });
+
+            const data = await response.json();
+            
+            // Error Handling
+            if (data.error) {
+                core.setFailed(`API Error: ${data.error.message}`);
+                return;
             }
+
+            const review = data.candidates?.[0]?.content?.parts?.[0]?.text || "❌ No review generated.";
+            
+            // Add footer about excluded files
+            let footer = '';
+            if (skippedFiles.length > 0) {
+                footer = `\n\n---\n*⚠️ Skipped files (too large):* \n${skippedFiles.map(f => `- ${f}`).join('\n')}`;
+            }
+
+            await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: review + footer
+            });

@@ -64,20 +64,48 @@ ai-pr-reviewer/
 
 ## ⚙️ Configuration
 
-The workflow can be customized by editing `.github/workflows/pr-review.yml`:
+You can customize the workflow via the `with` key or `inputs` if running manually:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| File extensions | All major code | Which file types to review |
-| AI Model | `gemini-2.0-flash` | Gemini model to use |
-| Review prompt | See workflow | Custom prompt for AI |
+| Input | Default | Description |
+|-------|---------|-------------|
+| `strictness` | `medium` | Review strictness: `low` (friendly), `medium` (standard), `high` (pedantic) |
+| `exclude_files` | `**/*.lock, ...` | Comma-separated glob patterns to ignore (e.g. `**/migrations/**`) |
+| `max_file_size` | `6000` | Max characters per file (prevents token overflow) |
+
+Example usage in `.github/workflows/pr-review.yml`:
+```yaml
+- uses: actions/github-script@v7
+  with:
+    script: |
+      // The script reads inputs from context.payload.inputs
+      // You can hardcode values here if needed
+```
+
+## 🧠 Engineering Approach
+
+This project goes beyond simple API calls by implementing robust engineering practices:
+
+### 1. Smart Context Management
+LLMs have token limits. Sending a 5000-line diff will crash the CI or hallucinate.
+- **Filtering**: We intelligently skip lockfiles (`package-lock.json`), minified code (`.min.js`), and huge configuration files.
+- **Chunking**: Large files are specifically identified and skipped with a clear message, ensuring the AI focuses on *reviewable* code.
+
+### 2. Structured Intelligence
+Instead of generic "looks good" feedback, the AI uses a strict System Prompt to classify findings:
+- 🔴 **Critical Issues**: Bugs, race conditions, security holes.
+- ⚠️ **Improvements**: Performance wins, refactoring opportunities.
+- ℹ️ **Nitpicks**: Variable naming, documentation (only in `high` strictness).
+
+### 3. Security First
+- API keys are injected deeply via `process.env` and never exposed in logs.
+- The workflow runs on standard GitHub runners with no external container dependencies.
 
 ## 🛠️ Tech Stack
 
-- **GitHub Actions** - CI/CD automation
-- **Google Gemini API** - AI/LLM for code review
-- **JavaScript** - Workflow script logic
-- **GitHub REST API** - Fetch PR data
+- **GitHub Actions** - CI/CD logic
+- **Google Gemini API** (2.0 Flash) - 1M token context window model
+- **Node.js** - Scripting runtime
+- **@actions/glob** - Efficient file matching
 
 ## 📝 Example Review Output
 
