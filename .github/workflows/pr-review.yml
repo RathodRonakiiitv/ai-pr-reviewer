@@ -1,0 +1,159 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    name: AI Code Review
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR Diff and Review
+        uses: actions/github-script@v7
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          script: |
+            core.info('=== Starting AI Code Review ===');
+            core.info(`PR Number: ${context.issue.number}`);
+            core.info(`Repository: ${context.repo.owner}/${context.repo.repo}`);
+            
+            // Check for API key
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (!apiKey) {
+              core.setFailed('GEMINI_API_KEY secret is not set');
+              return;
+            }
+            core.info('API key found');
+            
+            // Post initial comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## 🤖 AI Code Review\n\n⏳ Analyzing your code...'
+            });
+            
+            // Get PR files using GitHub API
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            
+            core.info(`Found ${files.length} changed files`);
+            
+            // Filter for supported source code files
+            // Supports: JS, TS, Python, Java, C++, C#, Go, Rust, PHP, Ruby, Swift, Kotlin, HTML, CSS, SQL, Shell, YAML, JSON, XML
+            const supportedExtensions = [
+              '.js', '.ts', '.jsx', '.tsx', 
+              '.py', 
+              '.java', '.cpp', '.c', '.h', '.cs', 
+              '.go', '.rs', '.php', '.rb', '.swift', '.kt', 
+              '.html', '.css', '.scss', 
+              '.sql', '.sh', '.yaml', '.yml', '.json', '.xml'
+            ];
+            
+            const codeFiles = files.filter(f => supportedExtensions.some(ext => f.filename.endsWith(ext)));
+            core.info(`Found ${codeFiles.length} supported code files`);
+            
+            if (codeFiles.length === 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '## 🤖 AI Code Review\n\n✅ No supported code files changed in this PR.'
+              });
+              return;
+            }
+            
+            // Build diff content
+            let diffContent = '';
+            for (const file of codeFiles) {
+              diffContent += `\n\n### File: ${file.filename}\n`;
+              diffContent += `Status: ${file.status}\n`;
+              if (file.patch) {
+                // Truncate large patches to avoid token limits
+                if (file.patch.length > 5000) {
+                     diffContent += `\`\`\`diff\n${file.patch.substring(0, 5000)}...\n(Truncated)\n\`\`\`\n`;
+                } else {
+                     diffContent += `\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+                }
+              }
+            }
+            
+            // Create the prompt
+            const prompt = `You are an expert polyglot code reviewer. Review the following code changes and provide constructive feedback.
+
+            Focus on:
+            - Code quality and best practices for the specific language
+            - Potential bugs or errors
+            - Performance improvements
+            - Security concerns
+            - Documentation suggestions
+
+            Format your response in markdown with sections for Summary, Suggestions, and Overall Assessment.
+
+            Code changes to review:
+            ${diffContent}`;
+            
+            // Call Gemini API
+            core.info('Calling Gemini API...');
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            
+            try {
+              const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ text: prompt }] }],
+                  generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 2048
+                  }
+                })
+              });
+              
+              const data = await response.json();
+              core.info('Gemini API response received');
+              
+              let reviewComment = '## 🤖 AI Code Review\n\n';
+              
+              if (data.error) {
+                reviewComment += `⚠️ **API Error:** ${data.error.message}\n\n*Please verify your GEMINI_API_KEY is valid.*`;
+              } else if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
+                reviewComment += data.candidates[0].content.parts[0].text;
+              } else {
+                reviewComment += '❌ Unable to generate review. Unexpected API response.';
+              }
+              
+              // Post the review
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: reviewComment
+              });
+              
+              core.info('Review comment posted successfully');
+              
+            } catch (error) {
+              core.error(`API call failed: ${error.message}`);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `## 🤖 AI Code Review\n\n❌ **Error:** ${error.message}`
+              });
+            }
