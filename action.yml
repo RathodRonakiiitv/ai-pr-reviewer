@@ -9,8 +9,8 @@ inputs:
   github_token:
     description: 'GitHub token for API access'
     required: true
-  GEMINI_API_KEY:
-    description: 'Google Gemini API Key'
+  GROQ_API_KEY:
+    description: 'Groq API Key for Llama model inference'
     required: true
   exclude_files:
     description: 'Glob patterns to exclude from review (comma separated)'

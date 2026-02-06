@@ -24,7 +24,7 @@ async function run(): Promise<void> {
         core.info('=== Starting AI Code Review (TypeScript Action) ===');
 
         // 1. Parse Inputs
-        const apiKey = core.getInput('GEMINI_API_KEY', { required: true });
+        const apiKey = core.getInput('GROQ_API_KEY', { required: true });
         const excludePatterns = (core.getInput('exclude_files') || '')
             .split(',')
             .map(s => s.trim())
@@ -51,7 +51,7 @@ async function run(): Promise<void> {
 
         // Get GitHub Token (passed as input from workflow)
         const githubToken = core.getInput('github_token', { required: true });
-        
+
         const octokit = github.getOctokit(githubToken);
 
         // Post initial status
@@ -148,26 +148,33 @@ async function run(): Promise<void> {
     ${diffContext}
     `;
 
-        // 5. Call Gemini API
-        core.info('Calling Gemini API...');
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        // 5. Call Groq API (Llama 3.3 70B)
+        core.info('Calling Groq API (Llama 3.3 70B)...');
+        const apiUrl = 'https://api.groq.com/openai/v1/chat/completions';
 
         const response = await fetch(apiUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
             body: JSON.stringify({
-                contents: [{ parts: [{ text: systemPrompt }] }],
-                generationConfig: { temperature: 0.3 }
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: 'You are an expert Senior Staff Engineer doing a code review.' },
+                    { role: 'user', content: systemPrompt }
+                ],
+                temperature: 0.3
             })
         });
 
         const data: any = await response.json();
 
         if (data.error) {
-            throw new Error(`Gemini API Error: ${data.error.message}`);
+            throw new Error(`Groq API Error: ${data.error.message}`);
         }
 
-        const review = data.candidates?.[0]?.content?.parts?.[0]?.text || "❌ No review generated.";
+        const review = data.choices?.[0]?.message?.content || "❌ No review generated.";
 
         // 6. Post Review
         let footer = '';
