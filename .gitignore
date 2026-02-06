@@ -28,6 +28,6 @@ Thumbs.db
 npm-debug.log*
 
 # Build
-dist/
+# Note: dist/ is NOT ignored because it's required for the GitHub Action
 build/
 *.egg-info/
