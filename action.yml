@@ -6,6 +6,9 @@ branding:
   color: 'purple'
 
 inputs:
+  github_token:
+    description: 'GitHub token for API access'
+    required: true
   GEMINI_API_KEY:
     description: 'Google Gemini API Key'
     required: true

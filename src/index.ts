@@ -49,31 +49,9 @@ async function run(): Promise<void> {
         core.info(`PR #${prNumber} in ${owner}/${repo}`);
         core.info(`Config: Strictness=${strictness}, MaxFileSize=${maxFileSize}`);
 
-        // Initialize Octokit
-        const token = process.env.GITHUB_TOKEN || ''; // Usually provided automatically by actions runner if set
-        // Note: In action.yml we didn't strictly request GITHUB_TOKEN, but typical workflows provide it.
-        // However, for this action we need it to post comments. 
-        // Best practice: Input 'github_token' or use process.env['GITHUB_TOKEN'] if passed.
-        // For now, let's assume the user passes it or we use a default client if executing in a workflow that has permissions.
-        // But `actions/github`'s getOctokit requires a token.
-        // Let's actually assume we just need to use the token from the env if available, or ask user to pass it.
-        // Use a standard approach: verify if GITHUB_TOKEN is available in env or input.
-        // Actually, `github.getOctokit(token)` is standard. Let's add GITHUB_TOKEN to action.yml inputs or just assume it's in env.
-        // Better: Allow input, fallback to env.
-
-        // FIX: To keep it authentication-simple for the user, we often rely on the workflow providing `GITHUB_TOKEN`.
-        // But since we are inside a custom action, we can access the token if we add it to inputs or rely on `github.token` context availability?
-        // Actually, `core.getInput('github_token')` is best practice.
-        // Let's rely on standard `process.env.GITHUB_TOKEN` which is usually present if `env: GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` is set in step.
-        // Or we will update action.yml to accept it.
-        // For now, let's try to get it from env.
-
-        const githubToken = process.env.GITHUB_TOKEN || core.getInput('github_token');
-        if (!githubToken) {
-            core.setFailed('❌ GITHUB_TOKEN not found. Make sure to pass it in env or inputs.');
-            return;
-        }
-
+        // Get GitHub Token (passed as input from workflow)
+        const githubToken = core.getInput('github_token', { required: true });
+        
         const octokit = github.getOctokit(githubToken);
 
         // Post initial status

@@ -32,10 +32,9 @@ jobs:
 
       - name: AI Code Review
         uses: ./
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          strictness: ${{ inputs.strictness }}
-          exclude_files: ${{ inputs.exclude_files }}
-          max_file_size: ${{ inputs.max_file_size }}
+          strictness: ${{ github.event.inputs.strictness || 'medium' }}
+          exclude_files: ${{ github.event.inputs.exclude_files || '**/*.lock, **/*.min.js' }}
+          max_file_size: ${{ github.event.inputs.max_file_size || '6000' }}
